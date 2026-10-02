@@ -19,28 +19,17 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.Queue;
-import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 
 /**
- * Scheduled service that processes user feed generation requests.
- * 
- * <p>Process flow:
- * <ol>
- *   <li>Fetches user's GitHub repositories via GraphQL</li>
- *   <li>Submits async SBOM generation requests to CycloneDX services in batches</li>
- *   <li>Waits between batches to avoid overwhelming CycloneDX (single-threaded services)</li>
- *   <li>Marks request as PROCESSED once all repositories are submitted (not when processing completes)</li>
- *   <li>Sends email notification to user</li>
- * </ol>
- * 
- * <p>Critical: Status is set to PROCESSED before async SBOM processing completes.
- * Actual dependency extraction happens asynchronously via resultConsumer.
- * This is intentional to avoid blocking the scheduler and allow parallel processing.
- * 
- * <p>Only processes one feed at a time to avoid exhausting Spring's scheduler thread pool.
+ * Generates one feed at a time, completing it only after every SBOM result is persisted.
+ * Failed requests are retained with FAILED status and never receive a success email.
  */
 @Slf4j
 @Component
@@ -53,6 +42,7 @@ public class UserFeedGeneratorServiceImpl implements ScheduledService {
     private final CycloneDxService cycloneDxService;
     private final BiConsumer<SbomModel, Throwable> resultConsumer;
     private final EmailService emailService;
+    private final AtomicBoolean processing = new AtomicBoolean();
 
     /**
      * Scheduled method that processes waiting feed requests.
@@ -62,60 +52,65 @@ public class UserFeedGeneratorServiceImpl implements ScheduledService {
     @Override
     @Scheduled(fixedRate = 60_000, initialDelay = 1_000)
     public void schedule() {
-        //since spring's scheduling mechanism have limited core pool size
-        //this method should start processing only if it's not already processing
-        //another one feed request
-        boolean isFree = cycloneDxService.isFree();
-        if (!isFree) {
-            log.info("Some cdxgen services are still busy, will try again later");
+        if (!processing.compareAndSet(false, true)) {
             return;
         }
-
-        Optional<UserFeedRequestEntity> optionalRequest = repository.findOldestByStatus(
-                UserFeedRequestStatuses.WAITING_FOR_PROCESS.getValue()
-        );
-        if (optionalRequest.isEmpty()) {
-            log.debug("No user feed request found, will try again later");
-            return;
+        try {
+            if (!cycloneDxService.isFree()) {
+                return;
+            }
+            Optional<UserFeedRequestEntity> request = repository.findOldestByStatus(
+                    UserFeedRequestStatuses.WAITING_FOR_PROCESS.getValue()
+            );
+            if (request.isEmpty()) {
+                return;
+            }
+            UserFeedRequestEntity entity = request.get();
+            repository.updateStatusById(entity.getId(), UserFeedRequestStatuses.PROCESSING);
+            try {
+                process(entity);
+            } catch (Exception e) {
+                repository.updateStatusById(entity.getId(), UserFeedRequestStatuses.FAILED);
+                log.error("Feed generation failed for nickname {}", entity.getNickname(), e);
+            }
+        } finally {
+            processing.set(false);
         }
-
-        UserFeedRequestEntity entity = optionalRequest.get();
-        log.info("Started feed generation for nickname {}", entity.getNickname());
-        repository.updateStatusById(entity.getId(), UserFeedRequestStatuses.PROCESSING);
-        process(entity);
     }
 
     private void process(UserFeedRequestEntity rq) {
         long start = System.nanoTime();
-
         String nickname = rq.getNickname();
-        UserDataGraphQlResponseDto responseDto = getRepos(nickname);
-        Queue<String> userRepos = new ArrayDeque<>(responseDto.getRepoUrls());
+        Queue<String> userRepos = new ArrayDeque<>(getRepos(nickname).getRepoUrls().stream().distinct().toList());
 
         while (!userRepos.isEmpty()) {
             Queue<HttpHost> hosts = cycloneDxService.getFreeHosts();
+            if (hosts.isEmpty()) {
+                throw new IllegalStateException("No CycloneDX host available for feed generation");
+            }
+            List<CompletableFuture<?>> results = new ArrayList<>();
             while (!hosts.isEmpty() && !userRepos.isEmpty()) {
                 String url = userRepos.poll();
                 HttpHost host = hosts.poll();
-                cycloneDxService.getSbom(url, host).whenComplete((dto, throwable) ->
-                                resultConsumer.accept(new SbomModel(rq, dto, url), throwable));
+                results.add(cycloneDxService.getSbom(url, host).whenComplete((dto, throwable) ->
+                        resultConsumer.accept(new SbomModel(rq, dto, url), throwable)));
             }
-
-            LockSupport.parkNanos(Duration.ofMinutes(1L).toNanos());
+            CompletableFuture.allOf(results.toArray(new CompletableFuture<?>[0])).join();
         }
 
         repository.updateStatusById(rq.getId(), UserFeedRequestStatuses.PROCESSED);
-
         EmailModel emailModel = new EmailModel(
                 rq.getEmail(),
                 "Your personalized feed generated!",
                 "Feed generation completed. Please check yagfi.com/feed/" + nickname
         );
-        emailService.send(emailModel);
-
+        try {
+            emailService.send(emailModel);
+        } catch (Exception e) {
+            log.error("Feed generated but notification delivery failed for {}", nickname, e);
+        }
         long processTime = Duration.ofNanos(System.nanoTime() - start).toMinutes();
-        log.info("Finished generating feed for nickname {} and took {} minutes "
-                + "(but maybe not everything processed/uploaded yet)", nickname, processTime);
+        log.info("Finished generating feed for nickname {} in {} minutes", nickname, processTime);
     }
 
     private UserDataGraphQlResponseDto getRepos(String login) {

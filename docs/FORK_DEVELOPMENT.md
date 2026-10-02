@@ -73,19 +73,24 @@ separately. The Compose database password is a development example.
 
 - GitHub ingestion builds label queries, runs asynchronous loaders, switches
   issue/repository views between two table sets, and clears caches after refresh.
-- The GitLab loader returns no upload tasks, yet publishes a sync-completed
-  event. GitLab ingestion is a placeholder and must not be advertised as supported.
-- Sync-completed events are published before the issue loader replaces views.
-  Review this ordering and refresh atomicity before relying on it for freshness.
-- Feed generation polls waiting requests every minute, requests repository SBOMs
-  from cdxgen, resolves dependency homepages, and persists dependencies.
-- Feed status becomes `PROCESSED` after submissions, before all asynchronous
-  SBOM results finish; the current completion email therefore does not prove
-  that all dependencies were extracted. Completion semantics and failed-result
-  handling need a dedicated change with regression tests.
-- Existing tests cover utilities, mappers, homepage conversion, and selected
-  repository queries. End-to-end ingestion, view swapping, feed completion,
-  external-service failure, and email delivery still need verification.
+- GitLab ingestion remains unsupported. Its placeholder publishes no completion event.
+- Refresh selects the inactive tables from the current view dependencies (including
+  when the active dataset is empty). Both views, expired-table truncation, and sequence
+  resets execute in one database transaction. Caches clear and completion events publish
+  only after the transaction commits. Upload or switch failure publishes no success event.
+- Feed generation processes bounded batches and waits for every SBOM callback,
+  including dependency persistence, before setting `PROCESSED` and sending email.
+  SBOM, persistence, repository lookup, or unavailable-host errors set `FAILED`.
+  Notification failure is logged while preserving a successfully generated feed.
+- `FAILED` requests are retained for inspection; no automatic retry or failure email
+  is implemented. GitHub, cdxgen, and SMTP credentials are needed to verify live flows.
+- Regression tests cover completion ordering, SBOM/persistence failures, SMTP failures,
+  unsupported GitLab events, and view-switch commit/rollback ordering. Full database
+  tests require Docker. Unit tests can run with `mvn -Dgroups=Unit verify`.
+- Compared current upstream versions of the feed generator and issue loader before
+  this contribution; both still contained the ordering issues. Upstream changes also
+  reorganize DTO packages. Bulk upstream synchronization is intentionally separate
+  from this focused fork contribution.
 
 The upstream roadmap lists Android notifications, label discovery through AI,
 OpenSSF work, and personalization research. Those are upstream roadmap items,

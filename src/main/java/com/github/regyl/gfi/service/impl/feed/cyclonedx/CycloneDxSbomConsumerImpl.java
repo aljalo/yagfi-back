@@ -34,8 +34,7 @@ import java.util.function.Consumer;
  *   <li>Can be resolved to a GitHub repository URL</li>
  * </ul>
  * 
- * <p>Exceptions are caught and logged to prevent breaking the async CompletableFuture chain.
- * This ensures one failed SBOM doesn't stop the entire feed generation process.
+ * <p>Processing failures propagate so the feed generator cannot report false success.
  */
 @Slf4j
 @Component
@@ -47,8 +46,7 @@ public class CycloneDxSbomConsumerImpl implements Consumer<SbomModel> {
     private final BiFunction<SbomModel, String, UserFeedDependencyEntity> dependencyMapper;
 
     /**
-     * Processes SBOM model and extracts dependencies. Wraps execution in try-catch
-     * to prevent exceptions from breaking the async CompletableFuture chain.
+     * Processes SBOM model and propagates dependency persistence failures.
      * 
      * @param model SBOM model containing response and request context
      */
@@ -59,6 +57,7 @@ public class CycloneDxSbomConsumerImpl implements Consumer<SbomModel> {
         } catch (Exception e) {
             String msg = String.format("Error processing SbomModel: %s", e.getMessage());
             log.error(msg, e);
+            throw new IllegalStateException(msg, e);
         }
     }
 
