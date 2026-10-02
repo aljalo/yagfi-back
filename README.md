@@ -1,7 +1,7 @@
 # Introduction
 YAGFI - yet another good first issue
 <div align="center">
-  <a href="https://www.bestpractices.dev/en/projects/11787"><img src="https://www.bestpractices.dev/projects/10534/badge" alt="OpenSSF Best Practices"></a>
+  <a href="https://www.bestpractices.dev/en/projects/11787"><img src="https://www.bestpractices.dev/projects/11787/badge" alt="OpenSSF Best Practices"></a>
 </div>
 <div align="center">
   <a href="https://discord.gg/cggqh3Qr8d"><img src="https://img.shields.io/discord/1465432673164984567" alt="Discord"></a>
@@ -19,6 +19,10 @@ YAGFI - yet another good first issue
 <!-- TOC -->  
 
 Website: [yagfi.com](http://yagfi.com)
+
+This repository is Ali Al-Jalo's fork of [Regyl/yagfi-back](https://github.com/Regyl/yagfi-back).
+The website and existing implementation belong to the upstream project.
+See [Fork development](docs/FORK_DEVELOPMENT.md) for setup, verification, and contribution scope.
 
 ## Why yet another good-first-issue project?
 First of all, when I searched for projects to contribute, I met one thing. 
@@ -41,13 +45,15 @@ To compare with, look for other similar projects:
 - [up-for-grabs.net](https://up-for-grabs.net/)
 
 ## Implementation
-- Data updates every 12 minutes since GitHub rate limit allows no more
+- Issue refresh runs every hour by default, configured through
+  `spring.properties.auto-upload.period-mills` in [application.yml](src/main/resources/application.yml).
+  The local profile disables automatic issue and metadata loading.
 - The list of current supported issues is [here](https://github.com/Regyl/yagfi-back/blob/master/src/main/resources/data/labels.txt)
-  - See [CONTRIBUTING](https://github.com/Regyl/yagfi-back/tree/master/docs/CONTRUBUTING.md) if you found some unsupported labels
+  - See [CONTRIBUTING](docs/CONTRIBUTING.md) if you found some unsupported labels
 
 ## Frontend
 Frontend for this project is placed [here](https://github.com/Regyl/yagfi-front). Yes, it's vibe-coded. 
-Just because firstly I am a backend developer. See [CONTRIBUTING](https://github.com/Regyl/yagfi-back/tree/master/docs/CONTRUBUTING.md)
+Just because firstly I am a backend developer. See [CONTRIBUTING](docs/CONTRIBUTING.md)
 if you would like to fix it.
 
 # What's next

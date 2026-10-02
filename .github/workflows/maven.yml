@@ -13,11 +13,30 @@ on:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
 
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:15.3
+        env:
+          POSTGRES_DB: uj
+          POSTGRES_USER: idk_user
+          POSTGRES_PASSWORD: SomeUselessPassword02
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U idk_user -d uj"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
     - uses: actions/checkout@v4
@@ -29,6 +48,17 @@ jobs:
         cache: maven
     - name: Build with Maven
       run: mvn --batch-mode --update-snapshots verify
+    - name: Smoke test packaged application
+      run: bash scripts/smoke-test.sh
+    - name: Upload verification reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: verification-reports
+        path: |
+          target/surefire-reports/
+          /tmp/yagfi-smoke.log
+        if-no-files-found: ignore
 
     # Optional: Uploads the full dependency graph to GitHub to improve the quality of Dependabot alerts this repository can receive
 #    - name: Update dependency graph

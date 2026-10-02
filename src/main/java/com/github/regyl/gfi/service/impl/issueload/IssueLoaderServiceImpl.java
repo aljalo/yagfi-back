@@ -11,6 +11,8 @@ import org.springframework.cache.CacheManager;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
@@ -25,12 +27,14 @@ public class IssueLoaderServiceImpl implements ScheduledService {
 
     private final JdbcTemplate jdbcTemplate;
     private final CacheManager cacheManager;
+    private final PlatformTransactionManager transactionManager;
 
     @Override
     @Scheduled(fixedRateString = "${spring.properties.auto-upload.period-mills}", initialDelay = 1000)
     public void schedule() {
         log.info("Start issue load task");
         IssueTables table = determineTable();
+        jdbcTemplate.execute("TRUNCATE TABLE gfi." + table.getRepoTableName() + " RESTART IDENTITY CASCADE");
         Collection<CompletableFuture<Void>> futures = sourceServices.stream()
                 .flatMap(service -> service.upload(table).stream())
                 .toList();
@@ -38,28 +42,30 @@ public class IssueLoaderServiceImpl implements ScheduledService {
         //waiting all issues to be done
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> replaceView(table));
+        clearCaches();
         sourceServices.forEach(IssueSourceService::raiseUploadEvent);
-
-        replaceView(table);
         log.info("Issue load finished");
     }
 
     private IssueTables determineTable() {
-        Long countFirst = jdbcTemplate.queryForObject(
-                "select count(*) from gfi." + IssueTables.FIRST.getIssueTableName(),
-                Long.class
+        String activeTable = jdbcTemplate.queryForObject(
+                "select table_name from information_schema.view_table_usage "
+                        + "where view_schema = 'gfi' and view_name = 'issue_v' and table_schema = 'gfi'",
+                String.class
         );
-
-        if (countFirst == null || countFirst == 0) {
-            return IssueTables.FIRST;
-        } else  {
-            return IssueTables.SECOND;
+        for (IssueTables table : IssueTables.values()) {
+            if (table.getIssueTableName().equals(activeTable)) {
+                return IssueTables.getDifferent(table);
+            }
         }
+        throw new IllegalStateException("Cannot determine active issue table: " + activeTable);
     }
 
     private void replaceView(IssueTables table) {
-        jdbcTemplate.execute("CREATE OR REPLACE VIEW issue_v as select * from gfi." + table.getIssueTableName());
-        jdbcTemplate.execute("CREATE OR REPLACE VIEW repository_v as select * from gfi." + table.getRepoTableName());
+        jdbcTemplate.execute("CREATE OR REPLACE VIEW gfi.issue_v as select * from gfi." + table.getIssueTableName());
+        jdbcTemplate.execute("CREATE OR REPLACE VIEW gfi.repository_v as select * from gfi."
+                + table.getRepoTableName());
 
         log.info("Views recreated");
 
@@ -73,6 +79,9 @@ public class IssueLoaderServiceImpl implements ScheduledService {
         jdbcTemplate.execute(String.format("alter sequence gfi.%s_id_seq restart", expiredTable.getRepoTableName()));
         log.info("Sequences restarted");
 
+    }
+
+    private void clearCaches() {
         cacheManager.getCacheNames().forEach(cacheName -> {
             Cache cache = cacheManager.getCache(cacheName);
             if (cache != null) {
